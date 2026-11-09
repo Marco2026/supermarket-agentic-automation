@@ -1,1 +1,1 @@
-#Supermarket Agentic Automation
+# Supermarket Agentic Automation
