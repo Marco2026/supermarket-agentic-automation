@@ -2,7 +2,8 @@ from collections import Counter
 
 
 class Cart:
-    def __init__(self, order=None):
+    def __init__(self, id, order=None):
+        self.id = id
         self.order = Counter(order or {})   # lo que hay que comprar
         self.content = Counter()            # lo que ya está en el carro
 

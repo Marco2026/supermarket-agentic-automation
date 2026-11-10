@@ -1,5 +1,7 @@
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle, Circle
+from .Shelf import Shelf
+from .Cart import Cart
 
 COLORS = {"F": "#eeeeee", "S": "saddlebrown", "C": "steelblue"}
 VALID_CELLS = set("FSCN")
@@ -10,7 +12,7 @@ MOVES = {
     "DOWN": (0, 1),
     "LEFT": (-1, 0),
     "RIGHT": (1, 0),
-    "WAIT": (0, 0),
+    "WAIT": (0, 0)
 }
 
 
@@ -31,7 +33,13 @@ class GridWorld:
         self.grid = grid
 
         self.agents = {}                 # id_agente -> (x, y)
+        self.carrying = {}
         self._initial_positions = {}
+
+        self.shelves = {}
+        self.carts = {}
+        self.load_shelves_and_carts()
+
         self._fig = None                 # figura de matplotlib (se crea al hacer render)
         self._ax = None
         self._agent_artists = []
@@ -46,6 +54,10 @@ class GridWorld:
         if 0 <= x < self.width and 0 <= y < self.height:
             return self.grid[y][x]
         raise IndexError("Cell coordinates are out of bounds")
+
+    def _adjacent(self, agent_id, target):
+        x, y = self.agents[agent_id]
+        return abs(x - target[0]) + abs(y - target[1]) == 1 
 
     # ------------------------------------------------------------------
     # Agentes
@@ -69,15 +81,18 @@ class GridWorld:
 
         self._initial_positions = dict(starts)
         self.agents = dict(starts)
+        self.carrying = {a: None for a in starts}
 
     def reset(self):
         self.agents = dict(self._initial_positions)
+        self.carrying = {a: None for a in self._initial_positions}
 
     def perceive(self, agent_id):
         """Lo único que el agente puede saber del estado dinámico del mundo."""
         return {
             "position": self.agents[agent_id],
             "others": {a: p for a, p in self.agents.items() if a != agent_id},
+            "carrying": self.carrying[agent_id]
         }
 
     def step(self, agent_id, action):
@@ -86,6 +101,13 @@ class GridWorld:
         Un movimiento fallido (pared, estantería, borde u otro agente) no mueve al agente:
         es información útil para la capa reactiva.
         """
+        if isinstance(action, tuple):
+            kind, target = action
+            if kind == "PICK":
+                return self._pick(agent_id, target)
+            elif kind == "PUT":
+                return self._put(agent_id, target)
+            
         if action not in MOVES:
             raise ValueError(f"Acción desconocida: {action}")
 
@@ -104,6 +126,37 @@ class GridWorld:
 
         self.agents[agent_id] = (nx, ny)
         return True
+
+    def _pick(self, agent_id, target):
+        shelf = self.shelves.get(target)
+        if shelf is None or self.carrying[agent_id] is not None \
+                or not self._adjacent(agent_id, target):
+            return False
+        product = shelf.pick()
+        self.carrying[agent_id] = product
+        return product is not None
+
+    def _put(self, agent_id, target):
+        cart, product = self.carts.get(target), self.carrying[agent_id]
+        if cart is None or product is None or not self._adjacent(agent_id, target):
+            return False
+        if not cart.store(product):
+            return False
+        self.carrying[agent_id] = None
+        return True
+
+    # ------------------------------------------------------------------
+    # Initialize world
+    # ------------------------------------------------------------------
+    def load_shelves_and_carts(self):
+        for y, row in enumerate(self.grid):
+            for x, cell in enumerate(row):
+                if cell == "S":
+                    sid = len(self.shelves) + 1
+                    self.shelves[(x, y)] = Shelf(sid, f"Product {sid}")
+                elif cell == "C":
+                    cid = len(self.carts) + 1
+                    self.carts[(x, y)] = Cart(cid, None)
 
     # ------------------------------------------------------------------
     # Render
