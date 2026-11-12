@@ -1,20 +1,22 @@
 from .pathfinding import astar, adjacent_floor
+import random
+from global_config import SEED
+
+
+random.seed(SEED)
 
 DELTAS = {"UP": (0, -1), "DOWN": (0, 1), "LEFT": (-1, 0), "RIGHT": (1, 0)}
 NAMES = {v: k for k, v in DELTAS.items()}
 
 
-def _manhattan(a, b):
-    return abs(a[0] - b[0]) + abs(a[1] - b[1])
-
-
 class BDIAgent:
     MAX_BLOCKED_TICKS = 3   # ticks esperando antes de replanificar
 
-    def __init__(self, agent_id, beliefs, desires=None, intentions=None):
+    def __init__(self, agent_id, beliefs, desires=None, intentions=None, network=None):
         self.id = agent_id
+        self.network = network
         # beliefs: {"world": ..., "position": None, "others": {}, "carrying": None,
-        #           "product_locations": {producto: [(x, y), ...]}}
+        #           "product_locations": {producto: (x, y)}}
         self.beliefs = beliefs
         self.desires = desires if desires is not None else []
         self.intentions = intentions if intentions is not None else []
@@ -28,6 +30,7 @@ class BDIAgent:
     # ------------------------------------------------------------------
     def tick(self, percept):
         self.perceive(percept)
+        self.social()                       # actualiza creencias sobre otros agentes
         action, source = self.react(), "reactive"
         if action is None:                       # ninguna regla reactiva se dispara
             action, source = self.deliberate(), "deliberative"
@@ -53,7 +56,10 @@ class BDIAgent:
                     self._register_block()
             elif isinstance(action, tuple):      # ("PICK", pos) / ("PUT", pos)
                 if success:
-                    self.intentions.pop(0)
+                    done = self.intentions.pop(0)
+                    if self.network is not None and done.get("task_id") is not None:
+                        self.network.send({"type": "DONE", "from": self.id,
+                                           "to": done["target"], "task_id": done["task_id"]})
                 else:
                     self._abandon(f"{action} ha fallado")
         elif success and action in DELTAS:       # me movió la reactiva: la ruta ya no vale
@@ -80,8 +86,7 @@ class BDIAgent:
         self.beliefs["carrying"] = percept["carrying"]
 
     # ------------------------------------------------------------------
-    # Capa reactiva: devuelve una acción, o None si no tiene nada que decir.
-    # El orden de las reglas es su prioridad (la primera que se cumple gana).
+    # Capa reactiva:
     # ------------------------------------------------------------------
     def react(self):
         # Regla: no entrar en una celda ocupada por otro agente
@@ -98,7 +103,9 @@ class BDIAgent:
 
     def _register_block(self):
         self.blocked_ticks += 1
-        if self.blocked_ticks >= self.MAX_BLOCKED_TICKS:
+        move_prob = 0.3
+        rng = random.random()
+        if self.blocked_ticks >= self.MAX_BLOCKED_TICKS or rng < move_prob:
             self._replan()
 
     def _replan(self):
@@ -175,16 +182,15 @@ class BDIAgent:
 
     def _expand_fetch(self, fetch):
         """FETCH(producto) -> ir a la estantería, coger, ir al carro, depositar."""
-        shelves = self.beliefs["product_locations"].get(fetch["product"], [])
-        if not shelves:
+        shelf = self.beliefs["product_locations"].get(fetch["product"])
+        if shelf is None:
             self._abandon(f"no hay estantería con {fetch['product']}")
             return []
-        shelf = min(shelves, key=lambda s: _manhattan(s, self.beliefs["position"]))
         cart = fetch["cart"]
         return [{"type": "GO_TO", "target": shelf, "path": None},
                 {"type": "PICK", "target": shelf},
                 {"type": "GO_TO", "target": cart, "path": None},
-                {"type": "PUT", "target": cart}]
+                {"type": "PUT", "target": cart, "task_id": fetch.get("task_id")}]
 
     def _plan_path(self, target):
         world = self.beliefs["world"]
@@ -192,4 +198,44 @@ class BDIAgent:
 
     def _abandon(self, reason):
         print(f"[agente {self.id}] plan abandonado: {reason}")
+        if self.network is not None:                 # avisa a los managers de las tareas perdidas
+            for i in self.intentions:
+                if i["type"] in ("FETCH", "PUT") and i.get("task_id") is not None:
+                    cart = i["cart"] if i["type"] == "FETCH" else i["target"]
+                    self.network.send({"type": "FAIL", "from": self.id, "to": cart,
+                                   "task_id": i["task_id"]})
         self.intentions.clear()
+
+    # ------------------------------------------------------------------
+    # Capa social
+    # ------------------------------------------------------------------
+    def social(self):
+        if self.network is None:
+            return
+        for msg in self.network.receive(self.id):
+            if msg["type"] == "CFP":
+                self._bid(msg)
+            elif msg["type"] == "ACCEPT":
+                self.intentions.append({"type": "FETCH", "product": msg["product"],
+                                        "cart": msg["from"], "task_id": msg["task_id"]})
+        self.update_intentions()                 # tocar intenciones => dejar el plan listo
+ 
+    def _bid(self, cfp):
+        if not self.done() or self.beliefs["carrying"] is not None:
+            return                               # ocupado: no puja
+        bids = {}
+        for task_id, product in cfp["tasks"].items():
+            cost = self._estimate_cost(product)
+            if cost is not None:
+                bids[task_id] = cost
+        if bids:
+            self.network.send({"type": "PROPOSE", "from": self.id, "to": cfp["from"], "bids": bids})
+ 
+    def _estimate_cost(self, product):
+        """Pasos hasta la estantería."""
+        world, pos = self.beliefs["world"], self.beliefs["position"]
+        shelf = self.beliefs["product_locations"].get(product)
+        if shelf is None:
+            return None
+        leg1 = astar(world, pos, adjacent_floor(world, shelf))
+        return None if leg1 is None else len(leg1)
