@@ -51,7 +51,7 @@ agent_3 = BDIAgent(3, {"world": world, "position": None, "others": {}, "carrying
 
 agents = [agent_1, agent_2, agent_3]
 
-manager = Manager(1, cart_pos, world.carts[cart_pos], network, contractors=[a.id for a in agents])
+manager = Manager(cart_pos, world.carts[cart_pos], network, contractors=[a.id for a in agents])
 manager.assign_order(order)
 
 for _ in range(1000):

@@ -10,9 +10,8 @@ class Manager:
     BID_WINDOW = 2   # ticks entre el CFP y la adjudicación (ida y vuelta)
     COOLDOWN = 5     # ticks mínimos entre rondas si nadie ha terminado ni fallado
 
-    def __init__(self, id, cart_pos, cart, network, contractors):
-        self.id = id
-        self.cart_pos = cart_pos
+    def __init__(self, pos, cart, network, contractors):
+        self.id = pos                        # el carro se identifica por su posición
         self.cart = cart
         self.network = network
         self.contractors = list(contractors)
@@ -54,7 +53,7 @@ class Manager:
 
     def _read_messages(self):
         event = False                        # DONE/FAIL: hay que re-anunciar ya
-        for msg in self.network.receive(self.cart_pos):
+        for msg in self.network.receive(self.id):
             if msg["type"] == "PROPOSE":
                 self.bids += [(cost, msg["from"], task_id)
                               for task_id, cost in msg["bids"].items()]
@@ -70,7 +69,7 @@ class Manager:
         self.bids = []
         tasks = self._open_tasks()
         for agent_id in self.contractors:
-            self.network.send({"type": "CFP", "from": self.cart_pos, "to": agent_id, "tasks": tasks})
+            self.network.send({"type": "CFP", "from": self.id, "to": agent_id, "tasks": tasks})
         self._round_start = self._last_announce = self.t
 
     def _award(self):
@@ -81,6 +80,6 @@ class Manager:
                 continue
             task.update(state="awarded", agent=agent_id)
             busy.add(agent_id)
-            self.network.send({"type": "ACCEPT", "from": self.cart_pos, "to": agent_id,
+            self.network.send({"type": "ACCEPT", "from": self.id, "to": agent_id,
                            "task_id": task_id, "product": task["product"]})
         self.bids = []
