@@ -61,42 +61,98 @@ The intentions of a BDI Agent are the steps it must follow to achieve its desire
 
 ## Communication
 
-1. CFP (manager $\to$ cada agente)
-Anuncia las tareas abiertas. Se envía un mensaje a cada contratista en cada ronda.
+Agents communicate through a synchronous `Network`: messages sent during a tick are delivered at the end of that tick and read in the next one, so no agent benefits from the order in which agents are executed. The total number of messages is counted in `network.sent` (a broadcast counts as one message per agent).
+
+The protocol is a Contract Net where each cart is managed by a `Manager` and the agents act as contractors. Managers are identified by the position of their cart, `(x, y)`, and agents by their integer id. A manager starts with no agents assigned. Agents start with no desires either: their work arrives as tasks assigned by a manager (the `FULFILL_ORDER` desire is only used by the baseline agent, which works alone and has no network).
+
+Communication has two levels:
+
+1. **Recruitment**: a manager asks all the agents to join its order, and builds a team.
+2. **Task allocation**: the manager and the members of its team run a Contract Net to decide who fetches each product.
+
+### Level 1: Recruitment (manager $\leftrightarrow$ all agents)
+
+A manager asks for as many agents as products are still pending, up to a limit (`max_team`, 4 by default). Only agents that are free answer: they are not in a team, they have no intentions and they are not carrying any product.
+
+1. RECRUIT (manager $\to$ every agent)
+Asks for agents to join the team. It is a broadcast, so one message is sent to each agent. `slots` is the number of agents the manager still needs.
+
+```python
+{"type": "RECRUIT", "from": (3, 13), "to": 1, "slots": 3}
+```
+
+2. OFFER (agent $\to$ manager)
+Answer of a free agent to a RECRUIT. The cost is the number of steps to reach the cart. Busy agents do not answer.
+
+```python
+{"type": "OFFER", "from": 1, "to": (3, 13), "cost": 14}
+```
+
+3. ENROLL (manager $\to$ selected agents)
+The manager enrolls the offers with the lowest cost, up to the number of slots. From this moment the agent belongs to the team of that manager.
+
+```python
+{"type": "ENROLL", "from": (3, 13), "to": 1}
+```
+
+4. DECLINE (agent $\to$ manager)
+Sent when an agent cannot join. If several managers enroll the same agent at the same time, it joins the one with the lowest offered cost and declines the rest. An agent that is already in a team declines every new ENROLL. The manager removes the agent from its team and recruits again.
+
+```python
+{"type": "DECLINE", "from": 1, "to": (7, 13)}
+```
+
+5. RELEASE (manager $\to$ agent)
+The agent leaves the team and becomes free for other managers. It is sent to the idle members that are no longer needed (for example, when 2 products are pending and the team has 4 agents, the 2 members without a task are released) and to the whole team when the order is complete.
+
+```python
+{"type": "RELEASE", "from": (3, 13), "to": 2}
+```
+
+### Level 2: Task allocation (manager $\leftrightarrow$ its team)
+
+Each unit of a product in the order is a task. The manager only talks to the members of its team that have no task assigned.
+
+6. CFP (manager $\to$ idle team members)
+Announces the open tasks.
 
 ```python
 {"type": "CFP", "from": (3, 13), "to": 1,
- "tasks": {0: "Product 7", 1: "Product 2", 2: "Product 2"}}   # task_id: producto
+ "tasks": {0: "Product 7", 1: "Product 2", 2: "Product 2"}}   # task_id: product
 ```
 
-2. PROPOSE (agente $\to$ manager)
-Responde al CFP con el coste (pasos hasta la estantería) de cada tarea alcanzable. Solo responde si está libre, y si está ocupado no envía nada.
+7. PROPOSE (agent $\to$ manager)
+Answer to a CFP with the cost (steps to the shelf) of every reachable task. It is only sent if the CFP comes from the agent's manager and the agent has no task; otherwise the agent does not answer.
 
 ```python
 {"type": "PROPOSE", "from": 1, "to": (3, 13),
- "bids": {0: 14, 1: 22, 2: 22}}                                # task_id: coste
+ "bids": {0: 14, 1: 22, 2: 22}}                                # task_id: cost
 ```
 
-3. ACCEPT (manager $\to$ agente ganador)
-Adjudica una tarea. Como mucho una por agente y ronda.
+8. ACCEPT (manager $\to$ winning agent)
+Assigns a task. Offers are sorted by cost and every agent gets at most one task per round.
 
 ```python
 {"type": "ACCEPT", "from": (3, 13), "to": 1,
  "task_id": 0, "product": "Product 7"}
 ```
 
-4. DONE (agente $\to$ manager)
-Se envía cuando el agente deposita el producto en el carro (el PUT tiene éxito).
+9. DONE (agent $\to$ manager)
+Sent when the agent puts the product in the cart (the PUT succeeds). The agent stays in the team until it is released.
 
 ```python
 {"type": "DONE", "from": 1, "to": (3, 13), "task_id": 0}
 ```
 
-5. FAIL (agente $\to$ manager)
-Se envía por cada tarea pendiente cuando el agente abandona su plan (por ejemplo, un producto sin estantería o un PICK/PUT fallido). El manager vuelve a abrir la tarea.
+10. FAIL (agent $\to$ manager)
+Sent for every pending task when the agent abandons its plan (for example, a product without a shelf or a failed PICK/PUT). The manager reopens the task and announces it again.
 
 ```python
 {"type": "FAIL", "from": 1, "to": (3, 13), "task_id": 0}
 ```
 
-Flujo típico de una tarea: CFP → PROPOSE → ACCEPT → DONE, con un tick de retraso entre cada mensaje. FAIL es la alternativa a DONE.
+### Message flow
+
+Typical life of an agent in a team: RECRUIT → OFFER → ENROLL → CFP → PROPOSE → ACCEPT → DONE → RELEASE. Every message takes one tick to arrive, and the manager waits 2 ticks (`BID_WINDOW`) to collect the answers of a round, so an agent starts moving about five ticks after the first RECRUIT. When recruitment or allocation rounds do not succeed (for example, no agent is free), the manager repeats them every 5 ticks (`COOLDOWN`), or immediately after a DONE, FAIL or DECLINE.
+
+There are no REJECT or REFUSE messages (agents that lose a bid or are busy do not receive or send anything), and there are no messages between agents: all the communication goes through a manager.
