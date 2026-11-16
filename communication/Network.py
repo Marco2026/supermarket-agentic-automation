@@ -9,12 +9,21 @@ class Network:
     def __init__(self):
         self._pending = []
         self._inboxes = defaultdict(list)
+        self.agents = set()                 # ids de agentes registrados (destinatarios de broadcast)
         self.sent = 0                       # métrica: mensajes intercambiados
+
+    def register(self, agent_id):
+        self.agents.add(agent_id)
 
     def send(self, msg):
         """msg: dict con al menos "type", "from" y "to"."""
         self._pending.append(msg)
         self.sent += 1
+
+    def broadcast(self, msg):
+        """Un mensaje a cada agente registrado (cuenta como un mensaje por destinatario)."""
+        for agent_id in sorted(self.agents):
+            self.send({**msg, "to": agent_id})
 
     def deliver(self):
         for msg in self._pending:

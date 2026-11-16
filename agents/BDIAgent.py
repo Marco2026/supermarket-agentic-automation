@@ -15,6 +15,10 @@ class BDIAgent:
     def __init__(self, agent_id, beliefs, desires=None, intentions=None, network=None):
         self.id = agent_id
         self.network = network
+        self.team = None            # manager al que pertenezco
+        self._offers = {}           # coste que ofrecí al ser recultado
+        if network is not None:
+            network.register(agent_id)
         # beliefs: {"world": ..., "position": None, "others": {}, "carrying": None,
         #           "product_locations": {producto: (x, y)}}
         self.beliefs = beliefs
@@ -212,30 +216,60 @@ class BDIAgent:
     def social(self):
         if self.network is None:
             return
-        for msg in self.network.receive(self.id):
-            if msg["type"] == "CFP":
-                self._bid(msg)
-            elif msg["type"] == "ACCEPT":
-                self.intentions.append({"type": "FETCH", "product": msg["product"],
-                                        "cart": msg["from"], "task_id": msg["task_id"]})
-        self.update_intentions()                 # tocar intenciones => dejar el plan listo
- 
+        msgs = self.network.receive(self.id)
+        for m in msgs:                                   # 1. mi manager me libera
+            if m["type"] == "RELEASE" and m["from"] == self.team:
+                self.team = None
+        self._resolve_enrollments([m for m in msgs if m["type"] == "ENROLL"])   # 2. equipo
+        for m in msgs:                                   # 3. el resto
+            if m["type"] == "RECRUIT":
+                self._offer(m)
+            elif m["type"] == "CFP":
+                self._bid(m)
+            elif m["type"] == "ACCEPT":
+                self.intentions.append({"type": "FETCH", "product": m["product"],
+                                        "cart": m["from"], "task_id": m["task_id"]})
+        self.update_intentions()                         # tocar intenciones => plan listo
+
+    def _is_free(self):
+        return self.team is None and self.done() and self.beliefs["carrying"] is None
+
+    def _offer(self, recruit):
+        """Nivel 1: respondo al reclutamiento si estoy libre (coste = pasos al carro)."""
+        cost = self._path_cost(recruit["from"]) if self._is_free() else None
+        if cost is not None:
+            self._offers[recruit["from"]] = cost
+            self.network.send({"type": "OFFER", "from": self.id, "to": recruit["from"], "cost": cost})
+
+    def _resolve_enrollments(self, enrolls):
+        """Si varios managers me reclutan a la vez, elijo el más cercano y rechazo al resto."""
+        if not enrolls:
+            return
+        chosen = None
+        if self._is_free():
+            chosen = min(enrolls, key=lambda m: (self._offers.get(m["from"], float("inf")),
+                                                 m["from"]))
+            self.team = chosen["from"]
+        for m in enrolls:
+            if m is not chosen:
+                self.network.send({"type": "DECLINE", "from": self.id, "to": m["from"]})
+
     def _bid(self, cfp):
-        if not self.done() or self.beliefs["carrying"] is not None:
-            return                               # ocupado: no puja
+        """Nivel 2: solo puja el equipo del manager, y solo si no tiene tarea."""
+        if cfp["from"] != self.team or not self.done() or self.beliefs["carrying"] is not None:
+            return
         bids = {}
         for task_id, product in cfp["tasks"].items():
-            cost = self._estimate_cost(product)
+            cost = self._path_cost(self.beliefs["product_locations"].get(product))
             if cost is not None:
                 bids[task_id] = cost
         if bids:
             self.network.send({"type": "PROPOSE", "from": self.id, "to": cfp["from"], "bids": bids})
- 
-    def _estimate_cost(self, product):
-        """Pasos hasta la estantería."""
-        world, pos = self.beliefs["world"], self.beliefs["position"]
-        shelf = self.beliefs["product_locations"].get(product)
-        if shelf is None:
+
+    def _path_cost(self, target):
+        """Pasos hasta una celda de suelo adyacente a target (None si no hay ruta)."""
+        if target is None:
             return None
-        leg1 = astar(world, pos, adjacent_floor(world, shelf))
-        return None if leg1 is None else len(leg1)
+        world = self.beliefs["world"]
+        path = astar(world, self.beliefs["position"], adjacent_floor(world, target))
+        return None if path is None else len(path)
