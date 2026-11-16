@@ -12,7 +12,7 @@ Hybrid BDI Agents present a layer structure which acts following a priority orde
 2. Deliberative Layer
 3. Social Layer
 
-The Reactive layer is the most prioritary, preventing the agent from collisions with other agents. The deliberative layer acts when there is no need to react instantly to an stimulus, planning the route to the next target. The social layer is always active and sends an update of the current state of the agent to the other agents. 
+The Reactive layer is the most prioritary, preventing the agent from collisions with other agents. The deliberative layer acts when there is no need to react instantly to an stimulus, planning the route to the next target. The social layer is always active and sends an update of the current state of the agent to the other agents.
 
 ### Beliefs, Desires and Intentions
 
@@ -58,3 +58,45 @@ The intentions of a BDI Agent are the steps it must follow to achieve its desire
     {"type": "FETCH", "product": "Product 2", "cart": (8, 1)},
 ]
 ```
+
+## Communication
+
+1. CFP (manager $\to$ cada agente)
+Anuncia las tareas abiertas. Se envía un mensaje a cada contratista en cada ronda.
+
+```python
+{"type": "CFP", "from": (3, 13), "to": 1,
+ "tasks": {0: "Product 7", 1: "Product 2", 2: "Product 2"}}   # task_id: producto
+```
+
+2. PROPOSE (agente $\to$ manager)
+Responde al CFP con el coste (pasos hasta la estantería) de cada tarea alcanzable. Solo responde si está libre, y si está ocupado no envía nada.
+
+```python
+{"type": "PROPOSE", "from": 1, "to": (3, 13),
+ "bids": {0: 14, 1: 22, 2: 22}}                                # task_id: coste
+```
+
+3. ACCEPT (manager $\to$ agente ganador)
+Adjudica una tarea. Como mucho una por agente y ronda.
+
+```python
+{"type": "ACCEPT", "from": (3, 13), "to": 1,
+ "task_id": 0, "product": "Product 7"}
+```
+
+4. DONE (agente $\to$ manager)
+Se envía cuando el agente deposita el producto en el carro (el PUT tiene éxito).
+
+```python
+{"type": "DONE", "from": 1, "to": (3, 13), "task_id": 0}
+```
+
+5. FAIL (agente $\to$ manager)
+Se envía por cada tarea pendiente cuando el agente abandona su plan (por ejemplo, un producto sin estantería o un PICK/PUT fallido). El manager vuelve a abrir la tarea.
+
+```python
+{"type": "FAIL", "from": 1, "to": (3, 13), "task_id": 0}
+```
+
+Flujo típico de una tarea: CFP → PROPOSE → ACCEPT → DONE, con un tick de retraso entre cada mensaje. FAIL es la alternativa a DONE.
